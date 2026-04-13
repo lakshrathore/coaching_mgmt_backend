@@ -1,13 +1,11 @@
 const bcrypt = require('bcryptjs');
 const db = require('../config/db');
+const { notifyNotice } = require('../services/notificationService');
 
 // ── SUBJECTS ───────────────────────────────────────────────────────────────────
 exports.getSubjects = async (req, res) => {
   try {
-    const [rows] = await db.execute(
-      'SELECT * FROM subjects WHERE org_id = ? AND is_active = 1 ORDER BY name',
-      [req.orgId]
-    );
+    const [rows] = await db.execute('SELECT * FROM subjects WHERE org_id = ? AND is_active = 1 ORDER BY name', [req.orgId]);
     res.json({ success: true, data: rows });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
@@ -23,12 +21,20 @@ exports.createSubject = async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
+exports.deleteSubject = async (req, res) => {
+  try {
+    await db.execute('UPDATE subjects SET is_active=0 WHERE id=? AND org_id=?', [req.params.id, req.orgId]);
+    res.json({ success: true, message: 'Subject removed' });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
 // ── FACULTY ────────────────────────────────────────────────────────────────────
 exports.getFaculty = async (req, res) => {
   try {
     const [rows] = await db.execute(`
       SELECT u.id, u.name, u.email, u.phone, u.is_active,
-             f.employee_id, f.qualification, f.specialization, f.experience_years, f.joining_date,
+             f.id as faculty_id, f.employee_id, f.qualification, f.specialization,
+             f.experience_years, f.joining_date, f.salary,
              GROUP_CONCAT(DISTINCT s.name ORDER BY s.name SEPARATOR ', ') as subjects_taught
       FROM users u
       JOIN faculty f ON u.id = f.user_id AND f.org_id = ?
@@ -49,8 +55,7 @@ exports.createFaculty = async (req, res) => {
     const { name, email, phone, password, qualification, specialization, experience_years, joining_date, salary, address } = req.body;
     const [countRows] = await conn.execute('SELECT COUNT(*) as cnt FROM faculty WHERE org_id = ?', [req.orgId]);
     const employee_id = `FAC${String(countRows[0].cnt + 1).padStart(3, '0')}`;
-    const hashed = await bcrypt.hash(password || phone || '123456', 10);
-
+    const hashed = await bcrypt.hash(password || phone || '123456', 12);
     const [userResult] = await conn.execute(
       'INSERT INTO users (org_id, name, email, phone, password, role) VALUES (?, ?, ?, ?, ?, "faculty")',
       [req.orgId, name, email || null, phone, hashed]
@@ -58,16 +63,31 @@ exports.createFaculty = async (req, res) => {
     await conn.execute(
       `INSERT INTO faculty (org_id, user_id, employee_id, qualification, specialization, experience_years, joining_date, salary, address)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [req.orgId, userResult.insertId, employee_id, qualification, specialization, experience_years || 0, joining_date, salary, address]
+      [req.orgId, userResult.insertId, employee_id, qualification, specialization, experience_years || 0, joining_date || null, salary || null, address]
     );
     await conn.commit();
     res.status(201).json({ success: true, message: 'Faculty added', employee_id });
   } catch (err) {
     await conn.rollback();
-    if (err.code === 'ER_DUP_ENTRY')
-      return res.status(400).json({ success: false, message: 'Email already exists' });
+    if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ success: false, message: 'Email already exists' });
     res.status(500).json({ success: false, message: err.message });
   } finally { conn.release(); }
+};
+
+exports.updateFaculty = async (req, res) => {
+  try {
+    const { name, email, phone, qualification, specialization, experience_years, joining_date, salary, address, is_active } = req.body;
+    await db.execute(
+      'UPDATE users SET name=?, email=?, phone=?, is_active=? WHERE id=? AND org_id=? AND role="faculty"',
+      [name, email || null, phone, is_active !== undefined ? is_active : 1, req.params.id, req.orgId]
+    );
+    await db.execute(
+      `UPDATE faculty SET qualification=?, specialization=?, experience_years=?, joining_date=?, salary=?, address=?
+       WHERE user_id=? AND org_id=?`,
+      [qualification, specialization, experience_years || 0, joining_date || null, salary || null, address, req.params.id, req.orgId]
+    );
+    res.json({ success: true, message: 'Faculty updated' });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
 // ── NOTICES ────────────────────────────────────────────────────────────────────
@@ -88,12 +108,28 @@ exports.getNotices = async (req, res) => {
 
 exports.createNotice = async (req, res) => {
   try {
-    const { title, content, target_role, batch_id, priority, expiry_date } = req.body;
+    const { title, content, target_role, batch_id, priority, expiry_date, send_notification } = req.body;
     await db.execute(
       `INSERT INTO notices (org_id, title, content, target_role, batch_id, priority, published_by, publish_date, expiry_date)
        VALUES (?, ?, ?, ?, ?, ?, ?, CURDATE(), ?)`,
       [req.orgId, title, content, target_role || 'all', batch_id || null, priority || 'normal', req.user.id, expiry_date || null]
     );
+
+    // Send SMS notifications if requested
+    if (send_notification) {
+      const [settings] = await db.execute('SELECT coaching_name FROM settings WHERE org_id=?', [req.orgId]);
+      const coachingName = settings[0]?.coaching_name || 'Coaching Center';
+
+      // Get target recipients
+      let recipientQuery = `SELECT u.phone FROM users u WHERE u.org_id=? AND u.is_active=1`;
+      const rParams = [req.orgId];
+      if (target_role && target_role !== 'all') { recipientQuery += ' AND u.role=?'; rParams.push(target_role); }
+      const [recipients] = await db.execute(recipientQuery, rParams);
+
+      notifyNotice({ title, content: content || '', recipients, coachingName })
+        .catch(err => console.error('Notice notify error:', err.message));
+    }
+
     res.status(201).json({ success: true, message: 'Notice published' });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
@@ -111,13 +147,14 @@ exports.getHomework = async (req, res) => {
     const { batch_id, subject_id } = req.query;
     let query = `
       SELECT h.*, b.name as batch_name, s.name as subject_name, u.name as assigned_by_name,
-             COUNT(hs.id) as submissions_count
+             COUNT(hs.id) as submissions_count,
+             SUM(hs.status='graded') as graded_count
       FROM homework h
       LEFT JOIN batches b ON h.batch_id = b.id AND b.org_id = ?
       LEFT JOIN subjects s ON h.subject_id = s.id AND s.org_id = ?
       LEFT JOIN users u ON h.assigned_by = u.id AND u.org_id = ?
       LEFT JOIN homework_submissions hs ON h.id = hs.homework_id
-      WHERE h.org_id = ?`;
+      WHERE h.org_id = ? AND h.is_active = 1`;
     const params = [req.orgId, req.orgId, req.orgId, req.orgId];
     if (batch_id) { query += ' AND h.batch_id = ?'; params.push(batch_id); }
     if (subject_id) { query += ' AND h.subject_id = ?'; params.push(subject_id); }
@@ -130,11 +167,79 @@ exports.getHomework = async (req, res) => {
 exports.createHomework = async (req, res) => {
   try {
     const { title, description, batch_id, subject_id, due_date } = req.body;
-    await db.execute(
+    const [result] = await db.execute(
       'INSERT INTO homework (org_id, title, description, batch_id, subject_id, due_date, assigned_by, assign_date) VALUES (?, ?, ?, ?, ?, ?, ?, CURDATE())',
-      [req.orgId, title, description, batch_id || null, subject_id || null, due_date, req.user.id]
+      [req.orgId, title, description, batch_id || null, subject_id || null, due_date || null, req.user.id]
     );
-    res.status(201).json({ success: true, message: 'Homework assigned' });
+    res.status(201).json({ success: true, message: 'Homework assigned', id: result.insertId });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.deleteHomework = async (req, res) => {
+  try {
+    await db.execute('UPDATE homework SET is_active=0 WHERE id=? AND org_id=?', [req.params.id, req.orgId]);
+    res.json({ success: true, message: 'Homework removed' });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+// ── HOMEWORK SUBMISSIONS (previously missing!) ────────────────────────────────
+exports.getHomeworkSubmissions = async (req, res) => {
+  try {
+    const { homework_id } = req.params;
+    // Verify homework belongs to org
+    const [hwCheck] = await db.execute('SELECT id FROM homework WHERE id=? AND org_id=?', [homework_id, req.orgId]);
+    if (!hwCheck.length) return res.status(404).json({ success: false, message: 'Homework not found' });
+
+    const [rows] = await db.execute(`
+      SELECT hs.*, u.name as student_name, s.enrollment_no
+      FROM homework_submissions hs
+      JOIN students s ON hs.student_id = s.id AND s.org_id = ?
+      JOIN users u ON s.user_id = u.id
+      WHERE hs.homework_id = ?
+      ORDER BY hs.submission_date DESC, u.name`,
+      [req.orgId, homework_id]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.submitHomework = async (req, res) => {
+  try {
+    const { homework_id, student_id, remarks } = req.body;
+    const file = req.file;
+
+    const [hwCheck] = await db.execute('SELECT id, due_date FROM homework WHERE id=? AND org_id=?', [homework_id, req.orgId]);
+    if (!hwCheck.length) return res.status(404).json({ success: false, message: 'Homework not found' });
+
+    const isLate = hwCheck[0].due_date && new Date() > new Date(hwCheck[0].due_date);
+
+    await db.execute(
+      `INSERT INTO homework_submissions (homework_id, student_id, submission_date, file_path, remarks, status)
+       VALUES (?, ?, CURDATE(), ?, ?, ?)
+       ON DUPLICATE KEY UPDATE submission_date=CURDATE(), file_path=?, remarks=?, status=?`,
+      [homework_id, student_id, file ? `/uploads/${file.filename}` : null, remarks, isLate ? 'late' : 'submitted',
+       file ? `/uploads/${file.filename}` : null, remarks, isLate ? 'late' : 'submitted']
+    );
+    res.json({ success: true, message: isLate ? 'Submitted (late)' : 'Submitted successfully' });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.gradeSubmission = async (req, res) => {
+  try {
+    const { marks_given, remarks } = req.body;
+    // Verify via homework org
+    const [rows] = await db.execute(`
+      SELECT hs.id FROM homework_submissions hs
+      JOIN homework h ON hs.homework_id = h.id AND h.org_id = ?
+      WHERE hs.id = ?`, [req.orgId, req.params.submission_id]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, message: 'Submission not found' });
+
+    await db.execute(
+      'UPDATE homework_submissions SET marks_given=?, remarks=?, status="graded" WHERE id=?',
+      [marks_given, remarks, req.params.submission_id]
+    );
+    res.json({ success: true, message: 'Graded' });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -162,15 +267,31 @@ exports.uploadMaterial = async (req, res) => {
   try {
     const { title, description, batch_id, subject_id, is_public } = req.body;
     const file = req.file;
+    if (!file) return res.status(400).json({ success: false, message: 'File is required' });
+
+    // Basic MIME validation
+    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif',
+      'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'video/mp4', 'video/mpeg', 'text/plain'];
+    if (!allowedTypes.includes(file.mimetype)) {
+      return res.status(400).json({ success: false, message: 'File type not allowed' });
+    }
+
     await db.execute(
       `INSERT INTO study_materials (org_id, title, description, batch_id, subject_id, file_path, file_type, file_size, is_public, uploaded_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [req.orgId, title, description, batch_id || null, subject_id || null,
-       file ? `/uploads/${file.filename}` : null,
-       file ? file.mimetype : null, file ? file.size : null,
-       is_public ? 1 : 0, req.user.id]
+       `/uploads/${file.filename}`, file.mimetype, file.size, is_public ? 1 : 0, req.user.id]
     );
     res.status(201).json({ success: true, message: 'Material uploaded' });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.deleteMaterial = async (req, res) => {
+  try {
+    await db.execute('DELETE FROM study_materials WHERE id=? AND org_id=?', [req.params.id, req.orgId]);
+    res.json({ success: true, message: 'Material removed' });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -199,7 +320,7 @@ exports.createEnquiry = async (req, res) => {
     await db.execute(
       `INSERT INTO enquiries (org_id, name, phone, email, interested_batch, source, notes, next_follow_up, assigned_to)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [req.orgId, name, phone, email, interested_batch, source || 'walk-in', notes, next_follow_up || null, assigned_to || null]
+      [req.orgId, name, phone, email || null, interested_batch, source || 'walk-in', notes, next_follow_up || null, assigned_to || null]
     );
     res.status(201).json({ success: true, message: 'Enquiry added' });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -226,10 +347,8 @@ exports.updateEnquiry = async (req, res) => {
 exports.getExpenses = async (req, res) => {
   try {
     const { category, from_date, to_date } = req.query;
-    let query = `
-      SELECT e.*, u.name as added_by_name FROM expenses e
-      LEFT JOIN users u ON e.added_by = u.id AND u.org_id = ?
-      WHERE e.org_id = ?`;
+    let query = `SELECT e.*, u.name as added_by_name FROM expenses e
+      LEFT JOIN users u ON e.added_by = u.id AND u.org_id = ? WHERE e.org_id = ?`;
     const params = [req.orgId, req.orgId];
     if (category) { query += ' AND e.category = ?'; params.push(category); }
     if (from_date) { query += ' AND e.expense_date >= ?'; params.push(from_date); }
@@ -252,6 +371,13 @@ exports.addExpense = async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
+exports.deleteExpense = async (req, res) => {
+  try {
+    await db.execute('DELETE FROM expenses WHERE id=? AND org_id=?', [req.params.id, req.orgId]);
+    res.json({ success: true, message: 'Expense deleted' });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
 // ── SETTINGS ───────────────────────────────────────────────────────────────────
 exports.getSettings = async (req, res) => {
   try {
@@ -262,11 +388,11 @@ exports.getSettings = async (req, res) => {
 
 exports.updateSettings = async (req, res) => {
   try {
-    const { coaching_name, address, phone, email, currency, currency_symbol, academic_year } = req.body;
+    const { coaching_name, address, phone, email, currency, currency_symbol, academic_year, attendance_threshold } = req.body;
     await db.execute(
-      `UPDATE settings SET coaching_name=?, address=?, phone=?, email=?, currency=?, currency_symbol=?, academic_year=?
-       WHERE org_id=?`,
-      [coaching_name, address, phone, email, currency, currency_symbol, academic_year, req.orgId]
+      `UPDATE settings SET coaching_name=?, address=?, phone=?, email=?, currency=?, currency_symbol=?,
+       academic_year=?, attendance_threshold=? WHERE org_id=?`,
+      [coaching_name, address, phone, email, currency, currency_symbol, academic_year, attendance_threshold || 75, req.orgId]
     );
     res.json({ success: true, message: 'Settings saved' });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -299,6 +425,13 @@ exports.createSchedule = async (req, res) => {
       [req.orgId, batch_id, subject_id || null, faculty_id || null, day_of_week, start_time, end_time, room]
     );
     res.status(201).json({ success: true, message: 'Schedule added' });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.deleteSchedule = async (req, res) => {
+  try {
+    await db.execute('UPDATE schedules SET is_active=0 WHERE id=? AND org_id=?', [req.params.id, req.orgId]);
+    res.json({ success: true, message: 'Schedule removed' });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -339,7 +472,6 @@ exports.getDashboardStats = async (req, res) => {
        FROM fee_transactions WHERE org_id=? AND status='paid' AND payment_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
        GROUP BY DATE_FORMAT(payment_date,'%Y-%m') ORDER BY MIN(payment_date)`, [o]
     );
-
     res.json({
       success: true,
       data: {

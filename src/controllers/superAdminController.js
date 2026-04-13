@@ -135,22 +135,37 @@ exports.deleteOrg = async (req, res) => {
     await conn.beginTransaction();
     const orgId = req.params.id;
 
-    // Cascading delete in order (FK constraints)
-    const tables = [
-      'exam_results', 'homework_submissions', 'student_batches',
-      'attendance', 'fee_transactions', 'schedules', 'exams',
-      'homework', 'study_materials', 'notices', 'enquiry_followups',
-      'enquiries', 'expenses', 'batch_subjects', 'batches',
-      'faculty', 'students', 'menu_permissions', 'settings',
-      'licenses', 'users'
-    ];
+    const [orgCheck] = await conn.execute('SELECT id FROM organizations WHERE id = ?', [orgId]);
+    if (!orgCheck.length) return res.status(404).json({ success: false, message: 'Org not found' });
 
-    for (const table of tables) {
-      if (['exam_results','homework_submissions','student_batches'].includes(table)) continue;
+    // Step 1: Delete leaf junction tables first (no org_id column, reference by FK)
+    // Get all exam IDs for this org
+    const [examIds] = await conn.execute('SELECT id FROM exams WHERE org_id = ?', [orgId]);
+    for (const e of examIds) {
+      await conn.execute('DELETE FROM exam_results WHERE exam_id = ?', [e.id]);
+    }
+    // Get all homework IDs
+    const [hwIds] = await conn.execute('SELECT id FROM homework WHERE org_id = ?', [orgId]);
+    for (const h of hwIds) {
+      await conn.execute('DELETE FROM homework_submissions WHERE homework_id = ?', [h.id]);
+    }
+    // Get all student IDs
+    const [studentIds] = await conn.execute('SELECT id FROM students WHERE org_id = ?', [orgId]);
+    for (const s of studentIds) {
+      await conn.execute('DELETE FROM student_batches WHERE student_id = ?', [s.id]);
+    }
+
+    // Step 2: Delete tables with org_id in proper order
+    const orgTables = [
+      'attendance', 'fee_transactions', 'schedules', 'exams', 'homework',
+      'study_materials', 'notices', 'enquiry_followups', 'enquiries',
+      'expenses', 'batch_subjects', 'batches', 'menu_permissions', 'settings', 'licenses',
+    ];
+    for (const table of orgTables) {
       await conn.execute(`DELETE FROM ${table} WHERE org_id = ?`, [orgId]);
     }
 
-    // Delete org users' dependent data
+    // Step 3: Delete users and their profile tables
     const [orgUsers] = await conn.execute('SELECT id FROM users WHERE org_id = ?', [orgId]);
     for (const u of orgUsers) {
       await conn.execute('DELETE FROM students WHERE user_id = ?', [u.id]);

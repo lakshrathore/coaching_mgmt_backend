@@ -1,4 +1,5 @@
 const mysql = require('mysql2/promise');
+const bcrypt = require('bcryptjs');
 require('dotenv').config();
 
 async function setupDatabase() {
@@ -30,7 +31,6 @@ async function setupDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )`,
-
       `CREATE TABLE IF NOT EXISTS licenses (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL UNIQUE,
@@ -46,7 +46,6 @@ async function setupDatabase() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS menu_permissions (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -56,7 +55,6 @@ async function setupDatabase() {
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
         UNIQUE KEY unique_org_menu (org_id, menu_key)
       )`,
-
       `CREATE TABLE IF NOT EXISTS users (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT,
@@ -67,11 +65,11 @@ async function setupDatabase() {
         role ENUM('superadmin','admin','faculty','student','parent') DEFAULT 'student',
         is_active BOOLEAN DEFAULT TRUE,
         profile_pic VARCHAR(255),
+        must_change_password BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS settings (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL UNIQUE,
@@ -83,11 +81,11 @@ async function setupDatabase() {
         currency VARCHAR(10) DEFAULT 'INR',
         currency_symbol VARCHAR(5) DEFAULT '₹',
         academic_year VARCHAR(20) DEFAULT '2024-25',
+        attendance_threshold INT DEFAULT 75,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS subjects (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -98,7 +96,6 @@ async function setupDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS batches (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -118,7 +115,6 @@ async function setupDatabase() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS batch_subjects (
         id INT PRIMARY KEY AUTO_INCREMENT,
         batch_id INT NOT NULL,
@@ -128,12 +124,11 @@ async function setupDatabase() {
         FOREIGN KEY (subject_id) REFERENCES subjects(id),
         UNIQUE KEY unique_batch_subject (batch_id, subject_id)
       )`,
-
       `CREATE TABLE IF NOT EXISTS students (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
         user_id INT UNIQUE NOT NULL,
-        enrollment_no VARCHAR(50),
+        enrollment_no VARCHAR(50) UNIQUE,
         father_name VARCHAR(100),
         mother_name VARCHAR(100),
         parent_phone VARCHAR(20),
@@ -150,7 +145,6 @@ async function setupDatabase() {
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS student_batches (
         id INT PRIMARY KEY AUTO_INCREMENT,
         student_id INT NOT NULL,
@@ -161,7 +155,6 @@ async function setupDatabase() {
         FOREIGN KEY (batch_id) REFERENCES batches(id),
         UNIQUE KEY unique_student_batch (student_id, batch_id)
       )`,
-
       `CREATE TABLE IF NOT EXISTS faculty (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -176,7 +169,6 @@ async function setupDatabase() {
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS attendance (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -193,7 +185,6 @@ async function setupDatabase() {
         FOREIGN KEY (batch_id) REFERENCES batches(id),
         UNIQUE KEY unique_attendance (student_id, batch_id, date)
       )`,
-
       `CREATE TABLE IF NOT EXISTS fee_transactions (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -211,11 +202,11 @@ async function setupDatabase() {
         discount_reason VARCHAR(255),
         remarks TEXT,
         received_by INT,
+        razorpay_order_id VARCHAR(100),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
         FOREIGN KEY (student_id) REFERENCES students(id)
       )`,
-
       `CREATE TABLE IF NOT EXISTS schedules (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -230,7 +221,6 @@ async function setupDatabase() {
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
         FOREIGN KEY (batch_id) REFERENCES batches(id)
       )`,
-
       `CREATE TABLE IF NOT EXISTS exams (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -250,7 +240,6 @@ async function setupDatabase() {
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
         FOREIGN KEY (batch_id) REFERENCES batches(id)
       )`,
-
       `CREATE TABLE IF NOT EXISTS exam_results (
         id INT PRIMARY KEY AUTO_INCREMENT,
         exam_id INT NOT NULL,
@@ -266,7 +255,6 @@ async function setupDatabase() {
         FOREIGN KEY (student_id) REFERENCES students(id),
         UNIQUE KEY unique_result (exam_id, student_id)
       )`,
-
       `CREATE TABLE IF NOT EXISTS homework (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -278,10 +266,10 @@ async function setupDatabase() {
         assign_date DATE,
         due_date DATE,
         file_path VARCHAR(255),
+        is_active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS homework_submissions (
         id INT PRIMARY KEY AUTO_INCREMENT,
         homework_id INT NOT NULL,
@@ -295,7 +283,6 @@ async function setupDatabase() {
         FOREIGN KEY (student_id) REFERENCES students(id),
         UNIQUE KEY unique_sub (homework_id, student_id)
       )`,
-
       `CREATE TABLE IF NOT EXISTS study_materials (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -311,7 +298,6 @@ async function setupDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS notices (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -327,7 +313,6 @@ async function setupDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS enquiries (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -344,7 +329,6 @@ async function setupDatabase() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS enquiry_followups (
         id INT PRIMARY KEY AUTO_INCREMENT,
         enquiry_id INT NOT NULL,
@@ -354,7 +338,6 @@ async function setupDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (enquiry_id) REFERENCES enquiries(id) ON DELETE CASCADE
       )`,
-
       `CREATE TABLE IF NOT EXISTS expenses (
         id INT PRIMARY KEY AUTO_INCREMENT,
         org_id INT NOT NULL,
@@ -376,14 +359,42 @@ async function setupDatabase() {
     }
     console.log('✅ All tables created');
 
-    // Super Admin
+    // Super Admin — use env var password, force change on first login if still default
+    const superAdminEmail = process.env.SUPER_ADMIN_EMAIL || 'superadmin@system.com';
+    const superAdminPassword = process.env.SUPER_ADMIN_PASSWORD || 'password';
+    const superHash = await bcrypt.hash(superAdminPassword, 12);
+    const mustChange = superAdminPassword === 'password' ? 1 : 0;
+
     await connection.query(
-      `INSERT IGNORE INTO users (id, org_id, name, email, phone, password, role) VALUES
-       (1, NULL, 'Super Admin', 'superadmin@system.com', '9999999999',
-       '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'superadmin')`
+      `INSERT IGNORE INTO users (id, org_id, name, email, phone, password, role, must_change_password) VALUES
+       (1, NULL, 'Super Admin', ?, '9999999999', ?, 'superadmin', ?)`,
+      [superAdminEmail, superHash, mustChange]
     );
 
-    // Demo org
+    // ── Migrations: add missing columns to existing databases ──────────────
+    const migrations = [
+      "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE",
+      "ALTER TABLE homework ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+      "ALTER TABLE study_materials ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+      "ALTER TABLE fee_transactions ADD COLUMN IF NOT EXISTS receipt_no VARCHAR(50) DEFAULT NULL",
+      "ALTER TABLE students ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+    ];
+
+    let migrationCount = 0;
+    for (const sql of migrations) {
+      try {
+        await connection.query(sql);
+        migrationCount++;
+      } catch (err) {
+        // Column may already exist in fresh installs — ignore duplicate column errors
+        if (!err.message.includes('Duplicate column')) {
+          console.warn('Migration warning:', err.message);
+        }
+      }
+    }
+    console.log(`✅ Migrations applied (${migrationCount} checks)`);
+
+        // Demo org
     await connection.query(
       `INSERT IGNORE INTO organizations (id, name, slug, owner_name, owner_email, owner_phone)
        VALUES (1, 'Demo Coaching Center', 'demo', 'Demo Admin', 'admin@demo.com', '9876543210')`
@@ -396,10 +407,13 @@ async function setupDatabase() {
       `INSERT IGNORE INTO settings (org_id, coaching_name, currency_symbol)
        VALUES (1, 'Demo Coaching Center', '₹')`
     );
+
+    const demoAdminPassword = process.env.DEMO_ADMIN_PASSWORD || 'Admin@123';
+    const demoHash = await bcrypt.hash(demoAdminPassword, 12);
     await connection.query(
-      `INSERT IGNORE INTO users (id, org_id, name, email, phone, password, role) VALUES
-       (2, 1, 'Demo Admin', 'admin@demo.com', '9876543210',
-       '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'admin')`
+      `INSERT IGNORE INTO users (id, org_id, name, email, phone, password, role, must_change_password) VALUES
+       (2, 1, 'Demo Admin', 'admin@demo.com', '9876543210', ?, 'admin', 1)`,
+      [demoHash]
     );
 
     const menus = ['dashboard','students','faculty','batches','schedule','attendance','fees','exams','homework','materials','notices','enquiries','expenses','reports','settings'];
@@ -411,10 +425,11 @@ async function setupDatabase() {
     }
 
     console.log('');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('  SUPER ADMIN  →  superadmin@system.com / password');
-    console.log('  DEMO ADMIN   →  admin@demo.com / password');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`  SUPER ADMIN  →  ${superAdminEmail} / ${superAdminPassword}`);
+    console.log(`  DEMO ADMIN   →  admin@demo.com / ${demoAdminPassword}`);
+    console.log('  ⚠️  Change these passwords immediately in production!');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
   } catch (err) {
     console.error('❌ Setup failed:', err.message);
